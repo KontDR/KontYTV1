@@ -1,0 +1,121 @@
+name: KontYT Guncel
+run-name: KontYT 0.13.22 build45 R37
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Paylaşım uzantılı veya sade kurulum'
+        type: choice
+        required: true
+        default: with-share
+        options: [with-share, standalone]
+      smoke_video_id:
+        description: 'İsteğe bağlı: kendi izinli videonun 11 karakterlik kimliği; boş bırakılabilir'
+        type: string
+        required: false
+        default: ''
+      confirm_rights:
+        description: 'Canlı test videosunu işleme hakkım var'
+        type: boolean
+        default: false
+  push:
+    paths:
+      - '.github/workflows/kontyt-build.yml'
+      - 'scripts/restore_kontyt.py' 
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore verified source snapshot
+        run: python3 scripts/restore_kontyt.py
+      # Named steps: when something fails, the red step name alone says what broke - no log needed.
+      - name: 0/5 Ortam ve yuklenen dosyalar
+        run: |
+          sw_vers
+          python3 --version
+          echo "--- depo kokunde ne var ---"
+          ls -la | head -40
+          echo "--- iki dosya ---"
+          ls -l .github/workflows/kontyt-build.yml scripts/restore_kontyt.py
+          shasum -a 256 .github/workflows/kontyt-build.yml scripts/restore_kontyt.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 1/5 Python bagimliliklari
+        run: python -m pip install -r requirements-dev.txt
+      - name: 2/5 Birim testleri
+        run: python -m unittest discover -s scripts/tests -v
+      - name: 3/5 Surum paketi butunlugu
+        run: python scripts/verify_release.py
+      - name: 4/5 Kaynak ve varlik denetimi
+        run: python scripts/check_source.py
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Select signing variant
+        if: github.event.inputs.variant == 'standalone'
+        run: cp project-standalone.yml project.yml
+      - name: Generate project
+        run: xcodegen generate
+      - name: Resolve local packages
+        run: xcodebuild -resolvePackageDependencies -project KontYT.xcodeproj -scheme KontYT
+      - name: Run simulator unit tests
+        env:
+          REQUESTED_SMOKE_ID: ${{ github.event.inputs.smoke_video_id }}
+          CONFIRM_RIGHTS: ${{ github.event.inputs.confirm_rights }}
+        run: |
+          SMOKE_ID=""
+          if [ "$CONFIRM_RIGHTS" = "true" ] && [ -n "$REQUESTED_SMOKE_ID" ]; then
+            [[ "$REQUESTED_SMOKE_ID" =~ ^[A-Za-z0-9_-]{11}$ ]] || { echo "Invalid video ID"; exit 1; }
+            SMOKE_ID="$REQUESTED_SMOKE_ID"
+          fi
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for group in d["devices"].values() for v in group if "iPhone" in v["name"]))')
+          set -o pipefail
+          xcodebuild test -project KontYT.xcodeproj -scheme KontYT \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath TestData -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO KONTYT_SMOKE_VIDEO_ID="$SMOKE_ID" 2>&1 | tee simulator-test.log
+      - name: Reject the removed WebKit Swift overlay
+        if: always()
+        run: |
+          APP=TestData/Build/Products/Debug-iphonesimulator/KontYT.app/KontYT
+          if [ ! -f "$APP" ]; then echo "No simulator app binary; nothing to check."; exit 0; fi
+          if otool -L "$APP" | grep -q libswiftWebKit; then
+            echo "::error::App links /usr/lib/swift/libswiftWebKit.dylib, which iOS 18.4+ does not ship. Use the plain Objective-C WebKit calls."
+            exit 1
+          fi
+          echo "OK: no libswiftWebKit load command."
+      - name: Build unsigned device application
+        run: |
+          set -o pipefail
+          xcodebuild -project KontYT.xcodeproj -scheme KontYT -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | tee device-build.log
+      - name: Seal App Group entitlements for sideload re-signing
+        run: python scripts/sign_for_sideload.py DerivedData/Build/Products/Release-iphoneos/KontYT.app
+      - name: Package for AltStore signing
+        run: |
+          mkdir -p Package/Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/KontYT.app Package/Payload/
+          cd Package
+          zip -qry ../KontYT-sideload.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KontYT-AltStore
+          path: KontYT-sideload.ipa
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KontYT-TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KontYT-BuildDiagnostics
+          path: |
+            simulator-test.log
+            device-build.log
+            RELEASE-MANIFEST.json
+          if-no-files-found: ignore
