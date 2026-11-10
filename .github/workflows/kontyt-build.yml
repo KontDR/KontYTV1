@@ -1,5 +1,5 @@
 name: KontYT Guncel
-run-name: KontYT 0.13.24 build47 R39
+run-name: KontYT 0.13.25 build48 R40
 on:
   workflow_dispatch:
     inputs:
