@@ -21,10 +21,13 @@ on:
   push:
     branches: [main]
 permissions:
-  contents: read
+  contents: write   # yalnızca IPA'yı yuvarlanan sürüme eklemek için (yedek kanal)
+  actions: write    # artifact yükleme izni; bunu almadan yükleme 403 ile cevaplanır
 jobs:
   build:
     runs-on: macos-15
+    # Bir adım asılı kalırsa koşu saatlerce beklemesin: 45 dakika derleme için fazlasıyla yeterli.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Restore verified source snapshot
@@ -51,7 +54,7 @@ jobs:
       - name: 4/5 Kaynak ve varlik denetimi
         run: python scripts/check_source.py
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Select signing variant
         if: github.event.inputs.variant == 'standalone'
         run: cp project-standalone.yml project.yml
@@ -94,14 +97,87 @@ jobs:
         run: |
           mkdir -p Package/Payload
           cp -R DerivedData/Build/Products/Release-iphoneos/KontYT.app Package/Payload/
+          # Küçük paket hem hızlı yüklenir hem de titrek serviste en az tökezleyen şeydir.
+          find Package/Payload -name '*.dSYM' -prune -exec rm -rf {} + 2>/dev/null || true
+          find Package/Payload -name '__MACOSX' -prune -exec rm -rf {} + 2>/dev/null || true
           cd Package
-          zip -qry ../KontYT-sideload.ipa Payload
-      - uses: actions/upload-artifact@v4
+          zip -qr9y ../KontYT-sideload.ipa Payload
+      - name: Report the package size
+        run: |
+          du -h KontYT-sideload.ipa
+          shasum -a 256 KontYT-sideload.ipa | tee KontYT-sideload.ipa.sha256
+      # Artifact servisi zaman zaman JSON yerine HTML hata sayfası döndürür; eylem de bunu
+      # "geçersiz JSON" sayıp beş kez, artan beklemeyle yeniden dener ve dakikalar yakar.
+      # Bu yüzden her deneme süreyle sınırlı ve öldürücü değil: arkada ikinci bir deneme,
+      # onun da arkasında bambaşka bir uç nokta kullanan sürüm yüklemesi var. Titrek bir
+      # servis artık "bu derleme IPA üretti mi?" sorusunun cevabını belirlemiyor.
+      - name: Upload the sideload package
+        id: ipa_once
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: actions/upload-artifact@v4
         with:
           name: KontYT-AltStore
-          path: KontYT-sideload.ipa
+          path: |
+            KontYT-sideload.ipa
+            KontYT-sideload.ipa.sha256
+          overwrite: true
+          compression-level: 9
+          retention-days: 30
+      - name: Upload the sideload package (second try)
+        id: ipa_twice
+        if: steps.ipa_once.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 8
+        uses: actions/upload-artifact@v4
+        with:
+          name: KontYT-AltStore
+          path: |
+            KontYT-sideload.ipa
+            KontYT-sideload.ipa.sha256
+          overwrite: true
+          compression-level: 9
+          retention-days: 30
+      - name: Attach the package to the rolling release
+        id: ipa_release
+        if: steps.ipa_once.outcome == 'failure' && steps.ipa_twice.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Artifact servisinden farklı bir uç nokta (uploads.github.com): ikisi nadiren
+          # aynı anda düşer. Sürüm yuvarlanan bir sürümdür; en yeni derleme eskisini değiştirir.
+          gh release view sideload-latest >/dev/null 2>&1 || \
+            gh release create sideload-latest --target "$GITHUB_SHA" \
+              --title "KontYT kurulum paketi" \
+              --notes "Otomatik derleme çıkışı. AltStore ile yeniden imzalayıp kurun."
+          gh release upload sideload-latest KontYT-sideload.ipa KontYT-sideload.ipa.sha256 --clobber
+          echo "IPA_RELEASE=1" >> "$GITHUB_ENV"
+      - name: Where to get the package
+        id: ipa_where
+        if: always()
+        run: |
+          echo "## KontYT 0.13.40 build63 R55" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.ipa_once.outcome }}" = "success" ] || [ "${{ steps.ipa_twice.outcome }}" = "success" ]; then
+            echo "IPA: ${{ steps.ipa_once.outputs.artifact-url }}${{ steps.ipa_twice.outputs.artifact-url }}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$IPA_RELEASE" ]; then
+            echo "IPA: ${{ github.server_url }}/${{ github.repository }}/releases/tag/sideload-latest" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::IPA hiçbir kanala yüklenemedi (artifact servisi HTML hata sayfası döndürdü). Koşuyu yeniden çalıştırın; paket sürümde de yok."
+            echo "IPA yüklenemedi." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Trim build diagnostics
+        if: always()
+        run: |
+          # Tam bir xcodebuild günlüğü onlarca megabayt olur; teşhis için kuyruk yeterlidir.
+          for f in simulator-test.log device-build.log; do
+            [ -f "$f" ] || continue
+            size=$(stat -f%z "$f" 2>/dev/null || echo 0)
+            if [ "$size" -gt 4000000 ]; then tail -c 4000000 "$f" > "$f.part" && mv "$f.part" "$f"; fi
+          done
       - name: Upload test results
         if: always()
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: KontYT-TestResults
@@ -109,6 +185,8 @@ jobs:
           if-no-files-found: ignore
       - name: Upload build diagnostics
         if: always()
+        continue-on-error: true
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: KontYT-BuildDiagnostics
