@@ -1,5 +1,10 @@
 name: KontYT Guncel
-run-name: KontYT 0.13.40 build63 R55
+# The title is the only thing that tells you which file version ran: an old file keeps the old name,
+# a re-run keeps the old one, and GitHub otherwise falls back to the commit message ("upload").
+# Quoted, or the " #" of the run number would start a YAML comment and cut the title short.
+# The revision marker below is checked by the first step: it answers "which file is this?" honestly.
+# KONTYT-WORKFLOW-REV: R55a
+run-name: "KontYT 0.13.40 build63 R55 R55a · #${{ github.run_number }} · ${{ github.event_name }} · ${{ github.ref_name }}"
 on:
   workflow_dispatch:
     inputs:
@@ -30,6 +35,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Runs before the restore overwrites the file, so this is what GitHub actually read to start
+      # the job. A mismatch means: the steps below are the OLD ones, the title above is the OLD one,
+      # and only a brand new run (never "Re-run") will use the file the restore just wrote.
+      - name: Is this the workflow file we think it is?
+        run: |
+          echo "--- depodaki is akisi dosyalari ---"
+          ls -l .github/workflows/
+          shasum -a 256 .github/workflows/kontyt-build.yml
+          if grep -q 'KONTYT-WORKFLOW-REV: R55a' .github/workflows/kontyt-build.yml; then
+            echo "OK: depodaki is akisi dosyasi bu surumle ayni (R55a)."
+          else
+            echo "::warning::Depodaki is akisi dosyasi bu surumden ESKI. Bu kosu eski adimlarla ve eski baslikla calisiyor. Geri yukleme dosyayi simdi yenileyecek: bu kosu bitince 'Run workflow' ile YENI bir kosu baslatin; 'Re-run' yapmayin."
+          fi
       - name: Restore verified source snapshot
         run: python3 scripts/restore_kontyt.py
       # Named steps: when something fails, the red step name alone says what broke - no log needed.
