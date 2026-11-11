@@ -1,0 +1,54 @@
+# KontYT — Codemagic ile imzasiz IPA (AltStore / SideStore ile telefona kurmak icin).
+# Bu dosyayi depo kokune koy; Codemagic depoyu eklediginde bu is akisini kendisi bulur.
+# Ucretsiz plan: ayda 500 macOS M2 dakikasi, tek paralel derleme, 120 dk is suresi siniri.
+workflows:
+  kontyt-unsigned:
+    name: KontYT imzasiz IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: 16.4
+      vars:
+        SCHEME: KontYT
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Kaynak snapshot'ini ac
+        script: |
+          set -e
+          python3 scripts/restore_kontyt.py
+      - name: Denetimler (birim testleri + surum butunlugu + kaynak)
+        script: |
+          set -e
+          python3 -m pip install --quiet -r requirements-dev.txt
+          python3 -m unittest discover -s scripts/tests -v
+          python3 scripts/verify_release.py
+          python3 scripts/check_source.py
+      - name: XcodeGen ile proje uret
+        script: |
+          set -e
+          brew install xcodegen
+          cp project-standalone.yml project.yml
+          xcodegen generate
+      - name: Imzasiz surum derlemesi
+        script: |
+          set -o pipefail
+          xcodebuild -project KontYT.xcodeproj -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | tee device-build.log
+      - name: AltStore icin IPA paketle
+        script: |
+          set -e
+          python3 scripts/sign_for_sideload.py DerivedData/Build/Products/Release-iphoneos/KontYT.app
+          rm -rf Package && mkdir -p Package/Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/KontYT.app Package/Payload/
+          cd Package && zip -qry ../KontYT-sideload.ipa Payload
+          cd .. && ls -lh KontYT-sideload.ipa
+    artifacts:
+      - KontYT-sideload.ipa
+      - device-build.log
+      - RELEASE-MANIFEST.json
