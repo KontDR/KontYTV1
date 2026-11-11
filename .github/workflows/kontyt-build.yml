@@ -19,9 +19,7 @@ on:
         type: boolean
         default: false
   push:
-    paths:
-      - '.github/workflows/kontyt-build.yml'
-      - 'scripts/restore_kontyt.py'
+    branches: [main]
 permissions:
   contents: read
 jobs:
