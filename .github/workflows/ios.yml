@@ -26,6 +26,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Restore verified source snapshot
+        run: python3 scripts/restore_kontyt.py
       # Named steps: when something fails, the red step name alone says what broke - no log needed.
       - name: 0/5 Ortam ve yuklenen dosyalar
         run: |
