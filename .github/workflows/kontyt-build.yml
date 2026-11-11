@@ -1,5 +1,5 @@
 name: KontYT Guncel
-run-name: KontYT 0.13.38 build61 R53
+run-name: KontYT 0.13.39 build62 R54
 on:
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ on:
   push:
     paths:
       - '.github/workflows/kontyt-build.yml'
-      - 'scripts/restore_kontyt.py' 
+      - 'scripts/restore_kontyt.py'
 permissions:
   contents: read
 jobs:
