@@ -4,7 +4,7 @@ name: KontYT Guncel
 # Quoted, or the " #" of the run number would start a YAML comment and cut the title short.
 # The revision marker below is checked by the first step: it answers "which file is this?" honestly.
 # KONTYT-WORKFLOW-REV: R57a
-run-name: "KontYT 0.13.40 build63 R57 R57a · #${{ github.run_number }} · ${{ github.event_name }} · ${{ github.ref_name }}"
+run-name: "KontYT 0.13.40 build64 R57 R57a · #${{ github.run_number }} · ${{ github.event_name }} · ${{ github.ref_name }}"
 on:
   workflow_dispatch:
     inputs:
@@ -174,14 +174,20 @@ jobs:
         id: ipa_where
         if: always()
         run: |
-          echo "## KontYT 0.13.40 build63 R57" >> "$GITHUB_STEP_SUMMARY"
+          echo "## KontYT 0.13.40 build64 R57" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.ipa_once.outcome }}" = "success" ] || [ "${{ steps.ipa_twice.outcome }}" = "success" ]; then
             echo "IPA: ${{ steps.ipa_once.outputs.artifact-url }}${{ steps.ipa_twice.outputs.artifact-url }}" >> "$GITHUB_STEP_SUMMARY"
           elif [ -n "$IPA_RELEASE" ]; then
             echo "IPA: ${{ github.server_url }}/${{ github.repository }}/releases/tag/sideload-latest" >> "$GITHUB_STEP_SUMMARY"
+          elif [ ! -f KontYT-sideload.ipa ]; then
+            # Nothing to upload because nothing was built. Reported as a warning on purpose: for two
+            # runs this read as "the artifact service failed" and sent the search into the upload
+            # steps, when the real failure was a compile error twenty steps earlier.
+            echo "::warning::IPA yok: paketleme adımı hiç çalışmadı, yani yüklenecek bir şey üretilmedi. Asıl hata bu adımda değil - logda derleme/test adımlarına bakın."
+            echo "IPA yok: derleme başarısız, asıl hata logda daha yukarıda." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::IPA hiçbir kanala yüklenemedi (artifact servisi HTML hata sayfası döndürdü). Koşuyu yeniden çalıştırın; paket sürümde de yok."
-            echo "IPA yüklenemedi." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::IPA üretildi ama hiçbir kanala yüklenemedi (artifact servisi HTML hata sayfası döndürdü). Koşuyu yeniden çalıştırın; paket sürümde de yok."
+            echo "IPA üretildi fakat yüklenemedi." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Trim build diagnostics
         if: always()
